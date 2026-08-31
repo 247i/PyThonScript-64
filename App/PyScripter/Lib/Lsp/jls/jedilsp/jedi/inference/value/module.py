@@ -64,7 +64,7 @@ class ModuleMixin(SubModuleDictMixin):
                 parent_context=self.as_context(),
                 origin_scope=origin_scope
             ),
-            GlobalNameFilter(self.as_context(), self.tree_node),
+            GlobalNameFilter(self.as_context()),
         )
         yield DictFilter(self.sub_modules_dict())
         yield DictFilter(self._module_attributes_dict())
@@ -80,7 +80,7 @@ class ModuleMixin(SubModuleDictMixin):
     def is_stub(self):
         return False
 
-    @property  # type: ignore[misc]
+    @property
     @inference_state_method_cache()
     def name(self):
         return self._module_name_class(self, self.string_names[-1])
@@ -138,7 +138,7 @@ class ModuleValue(ModuleMixin, TreeValue):
     api_type = 'module'
 
     def __init__(self, inference_state, module_node, code_lines, file_io=None,
-                 string_names=None, is_package=False):
+                 string_names=None, is_package=False) -> None:
         super().__init__(
             inference_state,
             parent_context=None,
@@ -148,8 +148,8 @@ class ModuleValue(ModuleMixin, TreeValue):
         if file_io is None:
             self._path: Optional[Path] = None
         else:
-            self._path = Path(file_io.path)
-        self.string_names = string_names  # Optional[Tuple[str, ...]]
+            self._path = file_io.path
+        self.string_names: Optional[tuple[str, ...]] = string_names
         self.code_lines = code_lines
         self._is_package = is_package
 

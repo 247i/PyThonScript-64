@@ -55,24 +55,30 @@ Users may choose 1 of the following options:
 
 - [coc.nvim](https://github.com/neoclide/coc.nvim) with [coc-jedi](https://github.com/pappasam/coc-jedi).
 - [ALE](https://github.com/dense-analysis/ale).
-- [Neovim's native LSP client](https://neovim.io/doc/user/lsp.html). See [here](https://github.com/neovim/nvim-lspconfig#jedi_language_server) for an example configuration.
+- [Neovim's native LSP client](https://neovim.io/doc/user/lsp.html). See [here](https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#jedi_language_server) for an example configuration.
 - [vim-lsp](https://github.com/prabirshrestha/vim-lsp).
 
 Note: this list is non-exhaustive. If you know of a great choice not included in this list, please submit a PR!
 
 ### Emacs
 
-Users may choose 1 of the following options:
+Users may choose one of the following options:
 
 - [lsp-jedi](https://github.com/fredcamps/lsp-jedi).
+- [eglot](https://github.com/joaotavora/eglot)
+
+For `eglot` add the following to your emacs config:
+```
+(add-to-list 'eglot-server-programs '(python-mode . ("jedi-language-server")))
+```
 
 Note: this list is non-exhaustive. If you know of a great choice not included in this list, please submit a PR!
 
 ### Visual Studio Code (vscode)
 
-With [this release](https://github.com/microsoft/vscode-python/releases/tag/2021.2.576481509) there is a new setting for `python.languageServer` to use jedi-language-server: set `python.languageServer` to `JediLSP`.
+Starting from the [October 2021 release](https://github.com/microsoft/vscode-python/releases/tag/2021.10.1317843341), set the `python.languageServer` setting to `Jedi` to use jedi-language-server.
 
-Note: this is experimental and uses an older version (for now) to support python 2.7.
+Note: This does not support Python 2.7.
 
 See: <https://github.com/pappasam/jedi-language-server/issues/50#issuecomment-781101169>
 
@@ -158,7 +164,8 @@ If you are configuring manually, jedi-language-server supports the following [in
     },
     "completion": {
       "disableSnippets": false,
-      "resolveEagerly": false
+      "resolveEagerly": false,
+      "ignorePatterns": []
     },
     "diagnostics": {
       "enable": true,
@@ -182,7 +189,8 @@ If you are configuring manually, jedi-language-server supports the following [in
     },
     "jediSettings": {
       "autoImportModules": [],
-      "caseInsensitiveCompletion": true
+      "caseInsensitiveCompletion": true,
+      "debug": false
     },
     "markupKindPreferred": "markdown",
     "workspace": {
@@ -258,4 +266,4 @@ Unlike python-language-server, jedi-language-server:
 
 ## Written by
 
-Samuel Roeca _samuel.roeca@gmail.com_
+[Samuel Roeca](https://samroeca.com/)

@@ -8,6 +8,8 @@ import warnings
 import re
 import builtins
 import typing
+from pathlib import Path
+from typing import Optional, Tuple
 
 from jedi.inference.compiled.getattr_static import getattr_static
 
@@ -38,7 +40,7 @@ NOT_CLASS_TYPES = (
 MethodDescriptorType = type(str.replace)
 WrapperDescriptorType = type(set.__iter__)
 # `object.__subclasshook__` is an already executed descriptor.
-object_class_dict = type.__dict__["__dict__"].__get__(object)
+object_class_dict = type.__dict__["__dict__"].__get__(object)  # type: ignore[index]
 ClassMethodDescriptorType = type(object_class_dict['__subclasshook__'])
 
 _sentinel = object()
@@ -145,7 +147,7 @@ class AccessPath:
         self.accesses = accesses
 
 
-def create_access_path(inference_state, obj):
+def create_access_path(inference_state, obj) -> AccessPath:
     access = create_access(inference_state, obj)
     return AccessPath(access.get_access_path_tuples())
 
@@ -173,15 +175,15 @@ class DirectObjectAccess:
     def _create_access(self, obj):
         return create_access(self._inference_state, obj)
 
-    def _create_access_path(self, obj):
+    def _create_access_path(self, obj) -> AccessPath:
         return create_access_path(self._inference_state, obj)
 
     def py__bool__(self):
         return bool(self._obj)
 
-    def py__file__(self):
+    def py__file__(self) -> Optional[Path]:
         try:
-            return self._obj.__file__
+            return Path(self._obj.__file__)
         except AttributeError:
             return None
 
@@ -211,18 +213,39 @@ class DirectObjectAccess:
     def py__getitem__all_values(self):
         if isinstance(self._obj, dict):
             return [self._create_access_path(v) for v in self._obj.values()]
-        return self.py__iter__list()
+        if isinstance(self._obj, (list, tuple)):
+            return [self._create_access_path(v) for v in self._obj]
 
-    def py__simple_getitem__(self, index):
-        if type(self._obj) not in ALLOWED_GETITEM_TYPES:
+        if self.is_instance():
+            cls = DirectObjectAccess(self._inference_state, self._obj.__class__)
+            return cls.py__getitem__all_values()
+
+        try:
+            getitem = self._obj.__getitem__
+        except AttributeError:
+            pass
+        else:
+            annotation = DirectObjectAccess(self._inference_state, getitem).get_return_annotation()
+            if annotation is not None:
+                return [annotation]
+        return None
+
+    def py__simple_getitem__(self, index, *, safe=True):
+        if safe and type(self._obj) not in ALLOWED_GETITEM_TYPES:
             # Get rid of side effects, we won't call custom `__getitem__`s.
             return None
 
         return self._create_access_path(self._obj[index])
 
     def py__iter__list(self):
-        if not hasattr(self._obj, '__getitem__'):
+        try:
+            iter_method = self._obj.__iter__
+        except AttributeError:
             return None
+        else:
+            p = DirectObjectAccess(self._inference_state, iter_method).get_return_annotation()
+            if p is not None:
+                return [p]
 
         if type(self._obj) not in ALLOWED_GETITEM_TYPES:
             # Get rid of side effects, we won't call custom `__getitem__`s.
@@ -306,33 +329,37 @@ class DirectObjectAccess:
         except TypeError:
             return False
 
-    def is_allowed_getattr(self, name, unsafe=False):
+    def is_allowed_getattr(self, name, safe=True) -> Tuple[bool, bool, Optional[AccessPath]]:
         # TODO this API is ugly.
-        if unsafe:
-            # Unsafe is mostly used to check for __getattr__/__getattribute__.
-            # getattr_static works for properties, but the underscore methods
-            # are just ignored (because it's safer and avoids more code
-            # execution). See also GH #1378.
-
-            # Avoid warnings, see comment in the next function.
-            with warnings.catch_warnings(record=True):
-                warnings.simplefilter("always")
-                try:
-                    return hasattr(self._obj, name), False
-                except Exception:
-                    # Obviously has an attribute (propably a property) that
-                    # gets executed, so just avoid all exceptions here.
-                    return False, False
         try:
             attr, is_get_descriptor = getattr_static(self._obj, name)
         except AttributeError:
-            return False, False
+            if not safe:
+                # Unsafe is mostly used to check for __getattr__/__getattribute__.
+                # getattr_static works for properties, but the underscore methods
+                # are just ignored (because it's safer and avoids more code
+                # execution). See also GH #1378.
+
+                # Avoid warnings, see comment in the next function.
+                with warnings.catch_warnings(record=True):
+                    warnings.simplefilter("always")
+                    try:
+                        return hasattr(self._obj, name), False, None
+                    except Exception:
+                        # Obviously has an attribute (probably a property) that
+                        # gets executed, so just avoid all exceptions here.
+                        pass
+            return False, False, None
         else:
             if is_get_descriptor and type(attr) not in ALLOWED_DESCRIPTOR_ACCESS:
+                if isinstance(attr, property):
+                    if hasattr(attr.fget, '__annotations__'):
+                        a = DirectObjectAccess(self._inference_state, attr.fget)
+                        return True, True, a.get_return_annotation()
                 # In case of descriptors that have get methods we cannot return
                 # it's value, because that would mean code execution.
-                return True, True
-        return True, False
+                return True, True, None
+        return True, False, None
 
     def getattr_paths(self, name, default=_sentinel):
         try:
@@ -361,7 +388,7 @@ class DirectObjectAccess:
         except AttributeError:
             pass
         else:
-            if module is not None:
+            if module is not None and isinstance(module, str):
                 try:
                     __import__(module)
                     # For some modules like _sqlite3, the __module__ for classes is
@@ -492,7 +519,7 @@ class DirectObjectAccess:
             # the signature. In that case we just want a simple escape for now.
             raise ValueError
 
-    def get_return_annotation(self):
+    def get_return_annotation(self) -> Optional[AccessPath]:
         try:
             o = self._obj.__annotations__.get('return')
         except AttributeError:

@@ -4,24 +4,25 @@ This module is a bridge between `jedi.Refactoring` and
 `pygls.types.TextEdit` types
 """
 
-
 import ast
 import difflib
 from bisect import bisect_right
 from typing import Iterator, List, NamedTuple, Union
 
 from jedi.api.refactoring import ChangedFile, Refactoring
-from pygls.lsp.types import (
+from lsprotocol.types import (
+    AnnotatedTextEdit,
+    CreateFile,
+    DeleteFile,
+    OptionalVersionedTextDocumentIdentifier,
     Position,
     Range,
     RenameFile,
     RenameFileOptions,
-    ResourceOperationKind,
     TextDocumentEdit,
     TextEdit,
-    VersionedTextDocumentIdentifier,
 )
-from pygls.workspace import Document, Workspace
+from pygls.workspace import TextDocument, Workspace
 
 
 def is_valid_python(code: str) -> bool:
@@ -36,7 +37,7 @@ def is_valid_python(code: str) -> bool:
 def lsp_document_changes(
     workspace: Workspace,
     refactoring: Refactoring,
-) -> List[Union[TextDocumentEdit, RenameFile]]:
+) -> List[Union[TextDocumentEdit, RenameFile, CreateFile, DeleteFile]]:
     """Get lsp text document edits from Jedi refactoring.
 
     This is the main public function that you probably want
@@ -59,7 +60,7 @@ class RefactoringConverter:
         """Get all File rename operations."""
         for old_name, new_name in self.refactoring.get_renames():
             yield RenameFile(
-                kind=ResourceOperationKind.Rename,
+                kind="rename",
                 old_uri=old_name.as_uri(),
                 new_uri=new_name.as_uri(),
                 options=RenameFileOptions(
@@ -72,12 +73,12 @@ class RefactoringConverter:
         changed_files = self.refactoring.get_changed_files()
         for path, changed_file in changed_files.items():
             uri = path.as_uri()
-            document = self.workspace.get_document(uri)
+            document = self.workspace.get_text_document(uri)
             version = 0 if document.version is None else document.version
             text_edits = lsp_text_edits(document, changed_file)
             if text_edits:
                 yield TextDocumentEdit(
-                    text_document=VersionedTextDocumentIdentifier(
+                    text_document=OptionalVersionedTextDocumentIdentifier(
                         uri=uri,
                         version=version,
                     ),
@@ -89,21 +90,22 @@ _OPCODES_CHANGE = {"replace", "delete", "insert"}
 
 
 def lsp_text_edits(
-    document: Document, changed_file: ChangedFile
-) -> List[TextEdit]:
+    document: TextDocument, changed_file: ChangedFile
+) -> List[Union[TextEdit, AnnotatedTextEdit]]:
     """Take a jedi `ChangedFile` and convert to list of text edits.
 
     Handles inserts, replaces, and deletions within a text file.
 
-    Additionally, makes sure returned code is syntactically valid Python.
+    Additionally, makes sure returned code is syntactically valid
+    Python.
     """
-    new_code = changed_file.get_new_code()
+    new_code = changed_file.get_new_code().replace('\r\n', '\n')
     if not is_valid_python(new_code):
         return []
 
-    old_code = document.source
+    old_code = document.source.replace('\r\n', '\n')
     position_lookup = PositionLookup(old_code)
-    text_edits = []
+    text_edits: List[Union[TextEdit, AnnotatedTextEdit]] = []
     for opcode in get_opcodes(old_code, new_code):
         if opcode.op in _OPCODES_CHANGE:
             start = position_lookup.get(opcode.old_start)
@@ -138,15 +140,13 @@ class Opcode(NamedTuple):
 
 
 def get_opcodes(old: str, new: str) -> List[Opcode]:
-    """Obtain typed opcodes from two files (old and new)"""
+    """Obtain typed opcodes from two files (old and new)."""
     diff = difflib.SequenceMatcher(a=old, b=new)
     return [Opcode(*opcode) for opcode in diff.get_opcodes()]
 
 
-# pylint: disable=too-few-public-methods
 class PositionLookup:
-    """Data structure to convert a byte offset in a file to a line number and
-    character."""
+    """Data structure to convert byte offset file to line number and character."""
 
     def __init__(self, code: str) -> None:
         # Create a list saying at what offset in the file each line starts.
@@ -157,8 +157,7 @@ class PositionLookup:
             offset += len(line)
 
     def get(self, offset: int) -> Position:
-        """Get the position in the file that corresponds to the given
-        offset."""
+        """Get the position in the file that corresponds to the given offset."""
         line = bisect_right(self.line_starts, offset) - 1
         character = offset - self.line_starts[line]
         return Position(line=line, character=character)

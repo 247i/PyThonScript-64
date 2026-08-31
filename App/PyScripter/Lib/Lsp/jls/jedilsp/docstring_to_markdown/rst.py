@@ -1,30 +1,227 @@
 from abc import ABC, abstractmethod
 from enum import IntEnum, auto
 from types import SimpleNamespace
-from typing import Union, List, Dict
+from typing import Callable, Match, Union, List, Dict
 import re
 
 
 class Directive:
-    def __init__(self, pattern: str, replacement: str, name: Union[str, None] = None):
+    def __init__(
+        self, pattern: str, replacement: Union[str, Callable[[Match], str]],
+        name: Union[str, None] = None,
+        flags: int = 0
+    ):
         self.pattern = pattern
         self.replacement = replacement
         self.name = name
+        self.flags = flags
 
+
+# https://www.sphinx-doc.org/en/master/usage/restructuredtext/domains.html#cross-referencing-python-objects
+SPHINX_CROSS_REF_PYTHON = (
+    'mod',
+    'func',
+    'data',
+    'const',
+    'class',
+    'meth',
+    'attr',
+    'exc',
+    'obj'
+)
+
+# https://www.sphinx-doc.org/en/master/usage/restructuredtext/domains.html#cross-referencing-c-constructs
+SPHINX_CROSS_REF_C = (
+    'member',
+    'data',
+    'func',
+    'macro',
+    'struct',
+    'union',
+    'enum',
+    'enumerator',
+    'type'
+)
+
+# https://www.sphinx-doc.org/en/master/usage/restructuredtext/domains.html#cross-referencing
+SPHINX_CROSS_REF_CPP = (
+    'any',
+    'class',
+    'struct',
+    'func',
+    'member',
+    'var',
+    'type',
+    'concept',
+    'enum',
+    'enumerator'
+)
+
+# https://www.sphinx-doc.org/en/master/usage/restructuredtext/domains.html#the-javascript-domain
+SPHINX_CROSS_REF_JS = (
+    'mod',
+    'func',
+    'meth',
+    'class',
+    'data',
+    'attr'
+)
+
+# https://www.sphinx-doc.org/en/master/usage/restructuredtext/domains.html#the-restructuredtext-domain
+SPHINX_CROSS_REF_RST = (
+    'dir',
+    'role'
+)
+
+# https://www.sphinx-doc.org/en/master/usage/restructuredtext/roles.html
+SPHINX_CROSS_REF_OTHER = (
+    'any',
+    # https://www.sphinx-doc.org/en/master/usage/restructuredtext/roles.html#cross-referencing-other-items-of-interest
+    'envvar',
+    'token',
+    'keyword',
+    'option',
+    'term',
+)
+
+SPHINX_PARAM = (
+    'param',
+    'parameter',
+    'arg',
+    'argument',
+    'key',
+    'keyword'
+)
 
 SPHINX_RULES: List[Directive] = [
     Directive(
-        pattern=r':(func|meth|class|obj|term):`\.?(?P<name>[^`]+?)`',
+        pattern=r':c:({}):`\.?(?P<name>[^`]+?)`'.format('|'.join(SPHINX_CROSS_REF_C)),
         replacement=r'`\g<name>`'
     ),
     Directive(
-        pattern=r'^:param (?P<param>\S+):',
-        replacement=r'- `\g<param>`:'
+        pattern=r':cpp:({}):`\.?(?P<name>[^`]+?)`'.format('|'.join(SPHINX_CROSS_REF_CPP)),
+        replacement=r'`\g<name>`'
     ),
     Directive(
-        pattern=r'^:return:',
-        replacement=r'Returns:'
+        pattern=r':js:({}):`\.?(?P<name>[^`]+?)`'.format('|'.join(SPHINX_CROSS_REF_JS)),
+        replacement=r'`\g<name>`'
+    ),
+    Directive(
+        pattern=r'(:py)?:({}):`\.?(?P<name>[^`]+?)`'.format('|'.join(SPHINX_CROSS_REF_PYTHON)),
+        replacement=r'`\g<name>`'
+    ),
+    Directive(
+        pattern=r'(:rst)?:({}):`\.?(?P<name>[^`]+?)`'.format('|'.join(SPHINX_CROSS_REF_RST)),
+        replacement=r'`\g<name>`'
+    ),
+    Directive(
+        pattern=r':({}):`\.?(?P<name>[^`]+?)`'.format('|'.join(SPHINX_CROSS_REF_OTHER)),
+        replacement=r'`\g<name>`'
+    ),
+    Directive(
+        pattern=r'^\s*:({}) (?P<type>\S+) (?P<param>\S+):'.format('|'.join(SPHINX_PARAM)),
+        replacement=r'- `\g<param>` (`\g<type>`):',
+        flags=re.MULTILINE
+    ),
+    Directive(
+        pattern=r'^\s*:({}) (?P<param>\S+): (?P<desc>.*)(\n|\r\n?):type \2: (?P<type>.*)$'.format('|'.join(SPHINX_PARAM)),
+        replacement=r'- `\g<param>` (\g<type>): \g<desc>',
+        flags=re.MULTILINE
+    ),
+    Directive(
+        pattern=r'^\s*:({}) (?P<param>\S+):'.format('|'.join(SPHINX_PARAM)),
+        replacement=r'- `\g<param>`:',
+        flags=re.MULTILINE
+    ),
+    Directive(
+        pattern=r'^\s*:type (?P<param>\S+):',
+        replacement=r'  . Type: `\g<param>`:',
+        flags=re.MULTILINE
+    ),
+    Directive(
+        pattern=r'^\s*:(return|returns):',
+        replacement=r'- returns:',
+        flags=re.MULTILINE
+    ),
+    Directive(
+        pattern=r'^\s*:rtype: (?P<type>\S+)',
+        replacement=r'- return type: `\g<type>`',
+        flags=re.MULTILINE
+    ),
+    Directive(
+        pattern=r'^\s*:(raises|raise|except|exception) (?P<exception>\S+):',
+        replacement=r'- raises `\g<exception>`:',
+        flags=re.MULTILINE
+    ),
+]
+
+
+class Admonition:
+    def __init__(self, name: str, label: str, icon: str = ''):
+        self.name = name
+        self.label = label
+        self.icon = icon
+
+    @property
+    def block_markdown(self):
+        return f'{self.icon} **{self.label}**'
+
+    @property
+    def inline_markdown(self):
+        return self.block_markdown + ':'
+
+
+ADMONITIONS = [
+    Admonition(
+        name='caution',
+        label='Caution',
+        icon='⚠️ '
+    ),
+    Admonition(
+        name='attention',
+        label='Attention',
+        icon='⚠️ '
+    ),
+    Admonition(
+        name='danger',
+        label='Danger',
+        icon='⚠️ '
+    ),
+    Admonition(
+        name='hint',
+        label='Hint',
+        icon='🛈'
+    ),
+    Admonition(
+        name='important',
+        label='Important',
+        icon='⚠️ '
+    ),
+    Admonition(
+        name='note',
+        label='Note',
+        icon='🛈'
+    ),
+    Admonition(
+        name='tip',
+        label='Tip',
+        icon='🛈'
+    ),
+    Admonition(
+        name='warning',
+        label='Warning',
+        icon='⚠️ '
     )
+]
+
+
+ADMONITION_DIRECTIVES: List[Directive] = [
+    # https://docutils.sourceforge.io/docs/ref/rst/directives.html#admonitions
+    Directive(
+        pattern=rf'\.\. {admonition.name}::',
+        replacement=admonition.inline_markdown
+    )
+    for admonition in ADMONITIONS
 ]
 
 
@@ -41,10 +238,7 @@ RST_DIRECTIVES: List[Directive] = [
         pattern=r'\.\. deprecated:: (?P<version>\S+)(?P<end>$|\n)',
         replacement=r'*Deprecated since \g<version>*\g<end>'
     ),
-    Directive(
-        pattern=r'\.\. warning::',
-        replacement=r'**Warning**:'
-    ),
+    *ADMONITION_DIRECTIVES,
     Directive(
         pattern=r'\.\. seealso::(?P<short_form>.*)(?P<end>$|\n)',
         replacement=r'*See also*\g<short_form>\g<end>'
@@ -55,7 +249,7 @@ RST_DIRECTIVES: List[Directive] = [
     ),
     Directive(
         pattern=r'`(?P<label>[^<`]+?)(\n?)<(?P<url>[^>`]+)>`_+',
-        replacement=r'[\g<label>](\g<url>)'
+        replacement=lambda m: '[' + m.group('label') + '](' + re.sub(r"\s+", "", m.group('url')) + ')'
     ),
     Directive(
         pattern=r':mod:`(?P<label>[^`]+)`',
@@ -122,7 +316,7 @@ SECTION_DIRECTIVES: Dict[str, List[Directive]] = {
 
 ESCAPING_RULES: List[Directive] = [
     Directive(
-        pattern=r'__(?P<text>\S+)__',
+        pattern=r'(?<!`)__(?P<text>\S+)__(?!`)',
         replacement=r'\_\_\g<text>\_\_'
     )
 ]
@@ -145,7 +339,7 @@ def looks_like_rst(value: str) -> bool:
         if (section + '\n' + '-' * len(section) + '\n') in value:
             return True
     for directive in RST_DIRECTIVES:
-        if re.search(directive.pattern, value):
+        if re.search(directive.pattern, value, directive.flags):
             return True
     # allow "text::" or "text ::" but not "^::$" or "^:::$"
     return bool(re.search(r'(\s|\w)::\n', value) or '\n>>> ' in value)
@@ -274,6 +468,7 @@ class TableParser(IParser):
                 self._columns_end
             )
             fragment = line[start:end].strip()
+            fragment = rst_to_markdown(fragment, extract_signature=False)
             self._max_sizes[i] = max(self._max_sizes[i], len(fragment))
             fragments.append(fragment)
         return fragments
@@ -476,13 +671,17 @@ class MathBlockParser(IndentedBlockParser):
 
 class NoteBlockParser(IndentedBlockParser):
     enclosure = '\n---'
-    directives = {'.. note::', '.. warning::'}
+    directives = {
+        f'.. {admonition.name}::': admonition
+        for admonition in ADMONITIONS
+    }
 
     def can_parse(self, line: str):
         return line.strip() in self.directives
 
     def initiate_parsing(self, line: str, current_language: str):
-        self._start_block('\n**Note**\n' if 'note' in line else '\n**Warning**\n')
+        admonition = self.directives[line.strip()]
+        self._start_block(f'\n{admonition.block_markdown}\n')
         return IBlockBeginning(remainder='')
 
 
@@ -519,7 +718,7 @@ DIRECTIVES = [
 ]
 
 
-def rst_to_markdown(text: str) -> str:
+def rst_to_markdown(text: str, extract_signature: bool = True) -> str:
     """
     Try to parse docstrings in following formats to markdown:
     - https://www.python.org/dev/peps/pep-0287/
@@ -555,7 +754,7 @@ def rst_to_markdown(text: str) -> str:
         lines = '\n'.join(lines_buffer)
         # rst markup handling
         for directive in DIRECTIVES:
-            lines = re.sub(directive.pattern, directive.replacement, lines)
+            lines = re.sub(directive.pattern, directive.replacement, lines, flags=directive.flags)
 
         for (section, header) in RST_SECTIONS.items():
             lines = lines.replace(header, '\n#### ' + section + '\n')
@@ -565,10 +764,12 @@ def rst_to_markdown(text: str) -> str:
 
     for line in text.split('\n'):
         if is_first_line:
-            signature_match = re.match(r'^(?P<name>\S+)\((?P<params>.*)\)$', line)
-            if signature_match and signature_match.group('name').isidentifier():
-                markdown += '```python\n' + line + '\n```\n'
-                continue
+            if extract_signature:
+                signature_match = re.match(r'^(?P<name>\S+)\((?P<params>.*)\)$', line)
+                if signature_match and signature_match.group('name').isidentifier():
+                    markdown += '```python\n' + line + '\n```\n'
+                    continue
+            is_first_line = False
 
         trimmed_line = line.lstrip()
 

@@ -8,6 +8,7 @@
 # phil phil <phil.prost@gmail.com>, 2018
 # Lübbe Onken <luebbe.opensource@gmail.com>, 2018
 # Thomas LEDOS <thomas.ledos92@gmail.com>, 2018
+# Goery Valance, 2024
 # 
 #, fuzzy
 msgid ""
@@ -15,22 +16,22 @@ msgstr ""
 "Project-Id-Version: PyScripter Languages\n"
 "POT-Creation-Date: 2018-01-23 16:26\n"
 "PO-Revision-Date: 2018-01-24 09:24+0000\n"
-"Last-Translator: Thomas LEDOS <thomas.ledos92@gmail.com>, 2018\n"
-"Language-Team: French (https://www.transifex.com/pyscripter/teams/116142/fr/)\n"
+"Last-Translator: Goery Valance, 2024\n"
+"Language-Team: French (https://app.transifex.com/pyscripter/teams/116142/fr/)\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 "Language: fr\n"
-"Plural-Forms: nplurals=2; plural=(n > 1);\n"
+"Plural-Forms: nplurals=3; plural=(n == 0 || n == 1) ? 0 : n != 0 && n % 1000000 == 0 ? 1 : 2;\n"
 
 msgid "Arabic"
 msgstr "Arabe"
 
 msgid "Simplified Chinese"
-msgstr ""
+msgstr "Chinois simplifié"
 
 msgid "Traditional Chinese"
-msgstr ""
+msgstr "Chinois traditionnel"
 
 msgid "English"
 msgstr "Anglais (English)"
@@ -53,7 +54,7 @@ msgstr "Italien"
 
 #. Language of Iran
 msgid "Persian"
-msgstr ""
+msgstr "Persan (Iran)"
 
 #. Language of Japan, Asia
 msgid "Japanese"
@@ -63,9 +64,13 @@ msgstr "Japonnais"
 msgid "Taqbaylit"
 msgstr "Kabyle"
 
-#. Language of Portugal, Europe
-msgid "Polish"
+#. Language of Korea
+msgid "Korean"
 msgstr ""
+
+#. Language of Poland, Europe
+msgid "Polish"
+msgstr "Polonais"
 
 #. Language of Portugal, Europe
 msgid "Portuguese (Portugal)"
@@ -87,6 +92,10 @@ msgstr "Slovaque"
 msgid "Spanish"
 msgstr "Espagnol"
 
+#. Language of Turkey
+msgid "Turkish"
+msgstr ""
+
 #. Language of Ukraine
 msgid "Ukrainian"
-msgstr ""
+msgstr "Ukrainien"

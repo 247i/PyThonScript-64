@@ -13,7 +13,6 @@ from pathlib import Path
 import parso
 from parso.python import tree
 
-from jedi._compatibility import cast_path
 from jedi.parser_utils import get_executable_nodes
 from jedi import debug
 from jedi import settings
@@ -100,13 +99,15 @@ class Script:
     """
     def __init__(self, code=None, *, path=None, environment=None, project=None):
         self._orig_path = path
-        # An empty path (also empty string) should always result in no path.
         if isinstance(path, str):
             path = Path(path)
 
         self.path = path.absolute() if path else None
 
         if code is None:
+            if path is None:
+                raise ValueError("Must provide at least one of code or path")
+
             # TODO add a better warning than the traceback!
             with open(path, 'rb') as f:
                 code = f.read()
@@ -152,7 +153,7 @@ class Script:
         if self.path is None:
             file_io = None
         else:
-            file_io = KnownContentFileIO(cast_path(self.path), self._code)
+            file_io = KnownContentFileIO(self.path, self._code)
         if self.path is not None and self.path.suffix == '.pyi':
             # We are in a stub file. Try to load the stub properly.
             stub_module = load_proper_stub_module(
@@ -205,6 +206,7 @@ class Script:
             before magic methods and name mangled names that start with ``__``.
         :rtype: list of :class:`.Completion`
         """
+        self._inference_state.reset_recursion_limitations()
         with debug.increase_indent_cm('complete'):
             completion = Completion(
                 self._inference_state, self._get_module_context(), self._code_lines,
@@ -229,6 +231,7 @@ class Script:
         :param prefer_stubs: Prefer stubs to Python objects for this method.
         :rtype: list of :class:`.Name`
         """
+        self._inference_state.reset_recursion_limitations()
         pos = line, column
         leaf = self._module_node.get_name_of_position(pos)
         if leaf is None:
@@ -272,6 +275,7 @@ class Script:
         :param prefer_stubs: Prefer stubs to Python objects for this method.
         :rtype: list of :class:`.Name`
         """
+        self._inference_state.reset_recursion_limitations()
         tree_name = self._module_node.get_name_of_position((line, column))
         if tree_name is None:
             # Without a name we really just want to jump to the result e.g.
@@ -364,10 +368,17 @@ class Script:
 
         :rtype: list of :class:`.Name`
         """
+        self._inference_state.reset_recursion_limitations()
         definitions = self.goto(line, column, follow_imports=True)
         if definitions:
             return definitions
         leaf = self._module_node.get_leaf_for_position((line, column))
+
+        if leaf is not None and leaf.end_pos == (line, column) and leaf.type == 'newline':
+            next_ = leaf.get_next_leaf()
+            if next_ is not None and next_.start_pos == leaf.end_pos:
+                leaf = next_
+
         if leaf is not None and leaf.type in ('keyword', 'operator', 'error_leaf'):
             def need_pydoc():
                 if leaf.value in ('(', ')', '[', ']'):
@@ -393,12 +404,13 @@ class Script:
         quite hard to do for Jedi, if it is too complicated, Jedi will stop
         searching.
 
-        :param include_builtins: Default ``True``. If ``False``, checks if a reference
+        :param include_builtins: Default ``True``. If ``False``, checks if a definition
             is a builtin (e.g. ``sys``) and in that case does not return it.
         :param scope: Default ``'project'``. If ``'file'``, include references in
             the current module only.
         :rtype: list of :class:`.Name`
         """
+        self._inference_state.reset_recursion_limitations()
 
         def _references(include_builtins=True, scope='project'):
             if scope not in ('project', 'file'):
@@ -433,6 +445,7 @@ class Script:
 
         :rtype: list of :class:`.Signature`
         """
+        self._inference_state.reset_recursion_limitations()
         pos = line, column
         call_details = helpers.get_signature_details(self._module_node, pos)
         if call_details is None:
@@ -552,6 +565,7 @@ class Script:
         return parso_to_jedi_errors(self._inference_state.grammar, self._module_node)
 
     def _names(self, all_scopes=False, definitions=True, references=False):
+        self._inference_state.reset_recursion_limitations()
         # Set line/column to a random position, because they don't matter.
         module_context = self._get_module_context()
         defs = [
@@ -580,7 +594,7 @@ class Script:
     @validate_line_column
     def extract_variable(self, line, column, *, new_name, until_line=None, until_column=None):
         """
-        Moves an expression to a new statemenet.
+        Moves an expression to a new statement.
 
         For example if you have the cursor on ``foo`` and provide a
         ``new_name`` called ``bar``::
@@ -707,9 +721,8 @@ class Interpreter(Script):
     :param namespaces: A list of namespace dictionaries such as the one
         returned by :func:`globals` and :func:`locals`.
     """
-    _allow_descriptor_getattr_default = True
 
-    def __init__(self, code, namespaces, **kwds):
+    def __init__(self, code, namespaces, *, project=None, **kwds):
         try:
             namespaces = [dict(n) for n in namespaces]
         except Exception:
@@ -722,16 +735,32 @@ class Interpreter(Script):
             if not isinstance(environment, InterpreterEnvironment):
                 raise TypeError("The environment needs to be an InterpreterEnvironment subclass.")
 
-        super().__init__(code, environment=environment,
-                         project=Project(Path.cwd()), **kwds)
+        if project is None:
+            project = Project(Path.cwd())
+
+        super().__init__(code, environment=environment, project=project, **kwds)
+
         self.namespaces = namespaces
-        self._inference_state.allow_descriptor_getattr = self._allow_descriptor_getattr_default
+        self._inference_state.allow_unsafe_executions = \
+            settings.allow_unsafe_interpreter_executions
+        # Dynamic params search is important when we work on functions that are
+        # called by other pieces of code. However for interpreter completions
+        # this is not important at all, because the current code is always new
+        # and will never be called by something.
+        # Also sometimes this logic goes a bit too far like in
+        # https://github.com/ipython/ipython/issues/13866, where it takes
+        # seconds to do a simple completion.
+        self._inference_state.do_dynamic_params_search = False
 
     @cache.memoize_method
     def _get_module_context(self):
+        if self.path is None:
+            file_io = None
+        else:
+            file_io = KnownContentFileIO(self.path, self._code)
         tree_module_value = ModuleValue(
             self._inference_state, self._module_node,
-            file_io=KnownContentFileIO(str(self.path), self._code),
+            file_io=file_io,
             string_names=('__main__',),
             code_lines=self._code_lines,
         )
