@@ -90,7 +90,7 @@ class InferenceState:
         self.compiled_subprocess = environment.get_inference_state_subprocess(self)
         self.grammar = environment.get_grammar()
 
-        self.latest_grammar = parso.load_grammar(version='3.7')
+        self.latest_grammar = parso.load_grammar(version='3.13')
         self.memoize_cache = {}  # for memoize decorators
         self.module_cache = imports.ModuleCache()  # does the job of `sys.modules`.
         self.stub_module_cache = {}  # Dict[Tuple[str, ...], Optional[ModuleValue]]
@@ -99,10 +99,11 @@ class InferenceState:
         self.mixed_cache = {}  # see `inference.compiled.mixed._create()`
         self.analysis = []
         self.dynamic_params_depth = 0
+        self.do_dynamic_params_search = settings.dynamic_params
         self.is_analysis = False
         self.project = project
         self.access_cache = {}
-        self.allow_descriptor_getattr = False
+        self.allow_unsafe_executions = False
         self.flow_analysis_enabled = True
 
         self.reset_recursion_limitations()
@@ -121,14 +122,14 @@ class InferenceState:
         return value_set
 
     # mypy doesn't suppport decorated propeties (https://github.com/python/mypy/issues/1362)
-    @property  # type: ignore[misc]
+    @property
     @inference_state_function_cache()
     def builtins_module(self):
         module_name = 'builtins'
-        builtins_module, = self.import_module((module_name,), sys_path=())
+        builtins_module, = self.import_module((module_name,), sys_path=[])
         return builtins_module
 
-    @property  # type: ignore[misc]
+    @property
     @inference_state_function_cache()
     def typing_module(self):
         typing_module, = self.import_module(('typing',))
@@ -181,8 +182,6 @@ class InferenceState:
 
     def parse_and_get_code(self, code=None, path=None,
                            use_latest_grammar=False, file_io=None, **kwargs):
-        if path is not None:
-            path = str(path)
         if code is None:
             if file_io is None:
                 file_io = FileIO(path)

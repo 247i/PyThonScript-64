@@ -4,31 +4,13 @@ import argparse
 import logging
 import sys
 
+from . import __version__
 from .server import SERVER
 
 
 def get_version() -> str:
     """Get the program version."""
-    # pylint: disable=import-outside-toplevel
-    try:
-        # Type checker for Python < 3.8 fails.
-        # Since this ony happens here, we just ignore.
-        from importlib.metadata import version  # type: ignore
-    except ImportError:
-        try:
-            # Below ignored both because this a redefinition from above, and
-            # because importlib_metadata isn't known by mypy. Ignored because
-            # this is intentional.
-            from importlib_metadata import version  # type: ignore
-        except ImportError:
-            print(
-                "Error: unable to get version. "
-                "If using Python < 3.8, you must install "
-                "`importlib_metadata` to get the version.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-    return version("jedi-language-server")
+    return __version__
 
 
 def cli() -> None:
@@ -103,7 +85,7 @@ Notes:
             file=sys.stderr,
         )
         sys.exit(1)
-    log_level = {0: logging.INFO, 1: logging.DEBUG}.get(
+    log_level = {0: logging.WARN, 1: logging.INFO, 2: logging.DEBUG}.get(
         args.verbose,
         logging.DEBUG,
     )

@@ -9,29 +9,29 @@ Official language server spec:
 import itertools
 from typing import Any, List, Optional, Union
 
-from jedi import Project
+import cattrs
+from jedi import Project, __version__
 from jedi.api.refactoring import RefactoringError
-from pydantic import ValidationError
-from pygls.lsp.methods import (
-    CODE_ACTION,
-    COMPLETION,
+from lsprotocol.types import (
     COMPLETION_ITEM_RESOLVE,
-    DEFINITION,
-    DOCUMENT_HIGHLIGHT,
-    DOCUMENT_SYMBOL,
-    HOVER,
     INITIALIZE,
-    REFERENCES,
-    RENAME,
-    SIGNATURE_HELP,
+    TEXT_DOCUMENT_CODE_ACTION,
+    TEXT_DOCUMENT_COMPLETION,
+    TEXT_DOCUMENT_DECLARATION,
+    TEXT_DOCUMENT_DEFINITION,
     TEXT_DOCUMENT_DID_CHANGE,
     TEXT_DOCUMENT_DID_CLOSE,
     TEXT_DOCUMENT_DID_OPEN,
     TEXT_DOCUMENT_DID_SAVE,
+    TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT,
+    TEXT_DOCUMENT_DOCUMENT_SYMBOL,
+    TEXT_DOCUMENT_HOVER,
+    TEXT_DOCUMENT_REFERENCES,
+    TEXT_DOCUMENT_RENAME,
+    TEXT_DOCUMENT_SIGNATURE_HELP,
+    TEXT_DOCUMENT_TYPE_DEFINITION,
     WORKSPACE_DID_CHANGE_CONFIGURATION,
     WORKSPACE_SYMBOL,
-)
-from pygls.lsp.types import (
     CodeAction,
     CodeActionKind,
     CodeActionOptions,
@@ -65,15 +65,21 @@ from pygls.lsp.types import (
     WorkspaceEdit,
     WorkspaceSymbolParams,
 )
+from pygls.capabilities import get_capability
 from pygls.protocol import LanguageServerProtocol, lsp_method
 from pygls.server import LanguageServer
 
 from . import jedi_utils, pygls_utils, text_edit_utils
-from .initialization_options import InitializationOptions
+from .initialization_options import (
+    InitializationOptions,
+    initialization_options_converter,
+)
 
 
 class JediLanguageServerProtocol(LanguageServerProtocol):
     """Override some built-in functions."""
+
+    _server: "JediLanguageServer"
 
     @lsp_method(INITIALIZE)
     def lsp_initialize(self, params: InitializeParams) -> InitializeResult:
@@ -82,15 +88,21 @@ class JediLanguageServerProtocol(LanguageServerProtocol):
         Here, we can conditionally register functions to features based
         on client capabilities and initializationOptions.
         """
-        server: "JediLanguageServer" = self._server
+        server = self._server
         try:
-            server.initialization_options = InitializationOptions.parse_obj(
-                {}
-                if params.initialization_options is None
-                else params.initialization_options
+            server.initialization_options = (
+                initialization_options_converter.structure(
+                    {}
+                    if params.initialization_options is None
+                    else params.initialization_options,
+                    InitializationOptions,
+                )
             )
-        except ValidationError as error:
-            msg = f"Invalid InitializationOptions, using defaults: {error}"
+        except cattrs.BaseValidationError as error:
+            msg = (
+                "Invalid InitializationOptions, using defaults:"
+                f" {cattrs.transform_error(error)}"
+            )
             server.show_message(msg, msg_type=MessageType.Error)
             server.show_message_log(msg, msg_type=MessageType.Error)
             server.initialization_options = InitializationOptions()
@@ -125,13 +137,15 @@ class JediLanguageServerProtocol(LanguageServerProtocol):
         server.feature(TEXT_DOCUMENT_DID_CLOSE)(did_close)
 
         if server.initialization_options.hover.enable:
-            server.feature(HOVER)(hover)
+            server.feature(TEXT_DOCUMENT_HOVER)(hover)
 
         initialize_result: InitializeResult = super().lsp_initialize(params)
+        workspace_options = initialization_options.workspace
         server.project = (
             Project(
                 path=server.workspace.root_path,
-                added_sys_path=initialization_options.workspace.extra_paths,
+                environment_path=workspace_options.environment_path,
+                added_sys_path=workspace_options.extra_paths,
                 smart_sys_path=True,
                 load_unsafe_extensions=False,
             )
@@ -157,7 +171,11 @@ class JediLanguageServer(LanguageServer):
         super().__init__(*args, **kwargs)
 
 
-SERVER = JediLanguageServer(protocol_cls=JediLanguageServerProtocol)
+SERVER = JediLanguageServer(
+    name="jedi-language-server",
+    version=__version__,
+    protocol_cls=JediLanguageServerProtocol,
+)
 
 
 # Server capabilities
@@ -175,7 +193,7 @@ def completion_item_resolve(
 
 
 @SERVER.feature(
-    COMPLETION,
+    TEXT_DOCUMENT_COMPLETION,
     CompletionOptions(
         trigger_characters=[".", "'", '"'], resolve_provider=True
     ),
@@ -184,15 +202,28 @@ def completion(
     server: JediLanguageServer, params: CompletionParams
 ) -> Optional[CompletionList]:
     """Returns completion items."""
-    document = server.workspace.get_document(params.text_document.uri)
-    jedi_script = jedi_utils.script(server.project, document)
-    jedi_lines = jedi_utils.line_column(params.position)
-    completions_jedi = jedi_script.complete(*jedi_lines)
-    snippet_support = server.client_capabilities.get_capability(
-        "text_document.completion.completion_item.snippet_support", False
-    )
     snippet_disable = server.initialization_options.completion.disable_snippets
     resolve_eagerly = server.initialization_options.completion.resolve_eagerly
+    ignore_patterns = server.initialization_options.completion.ignore_patterns
+    document = server.workspace.get_text_document(params.text_document.uri)
+    jedi_script = jedi_utils.script(server.project, document)
+    jedi_lines = jedi_utils.line_column(params.position)
+    completions_jedi_raw = jedi_script.complete(*jedi_lines)
+    if not ignore_patterns:
+        # A performance optimization. ignore_patterns should usually be empty;
+        # this special case avoid repeated filter checks for the usual case.
+        completions_jedi = (comp for comp in completions_jedi_raw)
+    else:
+        completions_jedi = (
+            comp
+            for comp in completions_jedi_raw
+            if not any(i.match(comp.name) for i in ignore_patterns)
+        )
+    snippet_support = get_capability(
+        server.client_capabilities,
+        "text_document.completion.completion_item.snippet_support",
+        False,
+    )
     markup_kind = _choose_markup(server)
     is_import_context = jedi_utils.is_import(
         script_=jedi_script,
@@ -203,10 +234,13 @@ def completion(
         snippet_support and not snippet_disable and not is_import_context
     )
     char_before_cursor = pygls_utils.char_before_cursor(
-        document=server.workspace.get_document(params.text_document.uri),
+        document=server.workspace.get_text_document(params.text_document.uri),
         position=params.position,
     )
     jedi_utils.clear_completions_cache()
+    # number of characters in the string representation of the total number of
+    # completions returned by jedi.
+    total_completion_chars = len(str(len(completions_jedi_raw)))
     completion_items = [
         jedi_utils.lsp_completion_item(
             completion=completion,
@@ -214,8 +248,9 @@ def completion(
             enable_snippets=enable_snippets,
             resolve_eagerly=resolve_eagerly,
             markup_kind=markup_kind,
+            sort_append_text=str(count).zfill(total_completion_chars),
         )
-        for completion in completions_jedi
+        for count, completion in enumerate(completions_jedi)
     ]
     return (
         CompletionList(is_incomplete=False, items=completion_items)
@@ -225,7 +260,8 @@ def completion(
 
 
 @SERVER.feature(
-    SIGNATURE_HELP, SignatureHelpOptions(trigger_characters=["(", ","])
+    TEXT_DOCUMENT_SIGNATURE_HELP,
+    SignatureHelpOptions(trigger_characters=["(", ","]),
 )
 def signature_help(
     server: JediLanguageServer, params: TextDocumentPositionParams
@@ -236,14 +272,14 @@ def signature_help(
     handle markdown well in the signature. Will update if this changes in the
     future.
     """
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     jedi_lines = jedi_utils.line_column(params.position)
     signatures_jedi = jedi_script.get_signatures(*jedi_lines)
     markup_kind = _choose_markup(server)
     signatures = [
         SignatureInformation(
-            label=signature.to_string(),
+            label=jedi_utils.signature_string(signature),
             documentation=MarkupContent(
                 kind=markup_kind,
                 value=jedi_utils.convert_docstring(
@@ -271,12 +307,29 @@ def signature_help(
     )
 
 
-@SERVER.feature(DEFINITION)
+@SERVER.feature(TEXT_DOCUMENT_DECLARATION)
+def declaration(
+    server: JediLanguageServer, params: TextDocumentPositionParams
+) -> Optional[List[Location]]:
+    """Support Goto Declaration."""
+    document = server.workspace.get_text_document(params.text_document.uri)
+    jedi_script = jedi_utils.script(server.project, document)
+    jedi_lines = jedi_utils.line_column(params.position)
+    names = jedi_script.goto(*jedi_lines)
+    definitions = [
+        definition
+        for definition in (jedi_utils.lsp_location(name) for name in names)
+        if definition is not None
+    ]
+    return definitions if definitions else None
+
+
+@SERVER.feature(TEXT_DOCUMENT_DEFINITION)
 def definition(
     server: JediLanguageServer, params: TextDocumentPositionParams
 ) -> Optional[List[Location]]:
     """Support Goto Definition."""
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     jedi_lines = jedi_utils.line_column(params.position)
     names = jedi_script.goto(
@@ -292,7 +345,24 @@ def definition(
     return definitions if definitions else None
 
 
-@SERVER.feature(DOCUMENT_HIGHLIGHT)
+@SERVER.feature(TEXT_DOCUMENT_TYPE_DEFINITION)
+def type_definition(
+    server: JediLanguageServer, params: TextDocumentPositionParams
+) -> Optional[List[Location]]:
+    """Support Goto Type Definition."""
+    document = server.workspace.get_text_document(params.text_document.uri)
+    jedi_script = jedi_utils.script(server.project, document)
+    jedi_lines = jedi_utils.line_column(params.position)
+    names = jedi_script.infer(*jedi_lines)
+    definitions = [
+        definition
+        for definition in (jedi_utils.lsp_location(name) for name in names)
+        if definition is not None
+    ]
+    return definitions if definitions else None
+
+
+@SERVER.feature(TEXT_DOCUMENT_DOCUMENT_HIGHLIGHT)
 def highlight(
     server: JediLanguageServer, params: TextDocumentPositionParams
 ) -> Optional[List[DocumentHighlight]]:
@@ -307,12 +377,15 @@ def highlight(
     Finally, we only return names if there are more than 1. Otherwise, we don't
     want to highlight anything.
     """
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     jedi_lines = jedi_utils.line_column(params.position)
     names = jedi_script.get_references(*jedi_lines, scope="file")
+    lsp_ranges = [jedi_utils.lsp_range(name) for name in names]
     highlight_names = [
-        DocumentHighlight(range=jedi_utils.lsp_range(name)) for name in names
+        DocumentHighlight(range=lsp_range)
+        for lsp_range in lsp_ranges
+        if lsp_range
     ]
     return highlight_names if highlight_names else None
 
@@ -322,7 +395,7 @@ def hover(
     server: JediLanguageServer, params: TextDocumentPositionParams
 ) -> Optional[Hover]:
     """Support Hover."""
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     jedi_lines = jedi_utils.line_column(params.position)
     markup_kind = _choose_markup(server)
@@ -334,17 +407,16 @@ def hover(
     if not hover_text:
         return None
     contents = MarkupContent(kind=markup_kind, value=hover_text)
-    document = server.workspace.get_document(params.text_document.uri)
     _range = pygls_utils.current_word_range(document, params.position)
     return Hover(contents=contents, range=_range)
 
 
-@SERVER.feature(REFERENCES)
+@SERVER.feature(TEXT_DOCUMENT_REFERENCES)
 def references(
     server: JediLanguageServer, params: TextDocumentPositionParams
 ) -> Optional[List[Location]]:
     """Obtain all references to text."""
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     jedi_lines = jedi_utils.line_column(params.position)
     names = jedi_script.get_references(*jedi_lines)
@@ -356,7 +428,7 @@ def references(
     return locations if locations else None
 
 
-@SERVER.feature(DOCUMENT_SYMBOL)
+@SERVER.feature(TEXT_DOCUMENT_DOCUMENT_SYMBOL)
 def document_symbol(
     server: JediLanguageServer, params: DocumentSymbolParams
 ) -> Optional[Union[List[DocumentSymbol], List[SymbolInformation]]]:
@@ -378,10 +450,11 @@ def document_symbol(
     non-hierarchical symbols, we simply remove `param` symbols. Others are
     included for completeness.
     """
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     names = jedi_script.get_names(all_scopes=True, definitions=True)
-    if server.client_capabilities.get_capability(
+    if get_capability(
+        server.client_capabilities,
         "text_document.document_symbol.hierarchical_document_symbol_support",
         False,
     ):
@@ -454,18 +527,16 @@ def workspace_symbol(
     return symbols if symbols else None
 
 
-@SERVER.feature(RENAME)
+@SERVER.feature(TEXT_DOCUMENT_RENAME)
 def rename(
     server: JediLanguageServer, params: RenameParams
 ) -> Optional[WorkspaceEdit]:
     """Rename a symbol across a workspace."""
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     jedi_lines = jedi_utils.line_column(params.position)
     try:
-        refactoring = jedi_script.rename(
-            *jedi_lines, new_name=params.new_name
-        )
+        refactoring = jedi_script.rename(*jedi_lines, new_name=params.new_name)
     except RefactoringError:
         return None
     changes = text_edit_utils.lsp_document_changes(
@@ -475,7 +546,7 @@ def rename(
 
 
 @SERVER.feature(
-    CODE_ACTION,
+    TEXT_DOCUMENT_CODE_ACTION,
     CodeActionOptions(
         code_action_kinds=[
             CodeActionKind.RefactorInline,
@@ -493,7 +564,7 @@ def code_action(
         2. Extract variable
         3. Extract function
     """
-    document = server.workspace.get_document(params.text_document.uri)
+    document = server.workspace.get_text_document(params.text_document.uri)
     jedi_script = jedi_utils.script(server.project, document)
     code_actions = []
     jedi_lines = jedi_utils.line_column(params.range.start)
@@ -574,8 +645,8 @@ def code_action(
 
 @SERVER.feature(WORKSPACE_DID_CHANGE_CONFIGURATION)
 def did_change_configuration(
-    server: JediLanguageServer,  # pylint: disable=unused-argument
-    params: DidChangeConfigurationParams,  # pylint: disable=unused-argument
+    server: JediLanguageServer,
+    params: DidChangeConfigurationParams,
 ) -> None:
     """Implement event for workspace/didChangeConfiguration.
 
@@ -587,12 +658,20 @@ def did_change_configuration(
 # Static capability or initializeOptions functions that rely on a specific
 # client capability or user configuration. These are associated with
 # JediLanguageServer within JediLanguageServerProtocol.lsp_initialize
+@jedi_utils.debounce(1, keyed_by="uri")
 def _publish_diagnostics(server: JediLanguageServer, uri: str) -> None:
     """Helper function to publish diagnostics for a file."""
-    document = server.workspace.get_document(uri)
-    jedi_script = jedi_utils.script(server.project, document)
-    errors = jedi_script.get_syntax_errors()
-    diagnostics = [jedi_utils.lsp_diagnostic(error) for error in errors]
+    # The debounce decorator delays the execution by 1 second
+    # canceling notifications that happen in that interval.
+    # Since this function is executed after a delay, we need to check
+    # whether the document still exists
+    if uri not in server.workspace.documents:
+        return
+
+    doc = server.workspace.get_text_document(uri)
+    diagnostic = jedi_utils.lsp_python_diagnostic(uri, doc.source)
+    diagnostics = [diagnostic] if diagnostic else []
+
     server.publish_diagnostics(uri, diagnostics)
 
 
@@ -605,8 +684,8 @@ def did_save_diagnostics(
 
 
 def did_save_default(
-    server: JediLanguageServer,  # pylint: disable=unused-argument
-    params: DidSaveTextDocumentParams,  # pylint: disable=unused-argument
+    server: JediLanguageServer,
+    params: DidSaveTextDocumentParams,
 ) -> None:
     """Actions run on textDocument/didSave: default."""
 
@@ -620,8 +699,8 @@ def did_change_diagnostics(
 
 
 def did_change_default(
-    server: JediLanguageServer,  # pylint: disable=unused-argument
-    params: DidChangeTextDocumentParams,  # pylint: disable=unused-argument
+    server: JediLanguageServer,
+    params: DidChangeTextDocumentParams,
 ) -> None:
     """Actions run on textDocument/didChange: default."""
 
@@ -635,8 +714,8 @@ def did_open_diagnostics(
 
 
 def did_open_default(
-    server: JediLanguageServer,  # pylint: disable=unused-argument
-    params: DidOpenTextDocumentParams,  # pylint: disable=unused-argument
+    server: JediLanguageServer,
+    params: DidOpenTextDocumentParams,
 ) -> None:
     """Actions run on textDocument/didOpen: default."""
 
@@ -650,8 +729,8 @@ def did_close_diagnostics(
 
 
 def did_close_default(
-    server: JediLanguageServer,  # pylint: disable=unused-argument
-    params: DidCloseTextDocumentParams,  # pylint: disable=unused-argument
+    server: JediLanguageServer,
+    params: DidCloseTextDocumentParams,
 ) -> None:
     """Actions run on textDocument/didClose: default."""
 
@@ -659,7 +738,8 @@ def did_close_default(
 def _choose_markup(server: JediLanguageServer) -> MarkupKind:
     """Returns the preferred or first of supported markup kinds."""
     markup_preferred = server.initialization_options.markup_kind_preferred
-    markup_supported = server.client_capabilities.get_capability(
+    markup_supported = get_capability(
+        server.client_capabilities,
         "text_document.completion.completion_item.documentation_format",
         [MarkupKind.PlainText],
     )

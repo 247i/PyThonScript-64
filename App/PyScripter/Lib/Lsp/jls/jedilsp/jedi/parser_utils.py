@@ -216,11 +216,14 @@ def is_scope(node):
 def _get_parent_scope_cache(func):
     cache = WeakKeyDictionary()
 
-    def wrapper(used_names, node, include_flows=False):
+    def wrapper(parso_cache_node, node, include_flows=False):
+        if parso_cache_node is None:
+            return func(node, include_flows)
+
         try:
-            for_module = cache[used_names]
+            for_module = cache[parso_cache_node]
         except KeyError:
-            for_module = cache[used_names] = {}
+            for_module = cache[parso_cache_node] = {}
 
         try:
             return for_module[node]
@@ -270,7 +273,18 @@ def get_cached_code_lines(grammar, path):
     Basically access the cached code lines in parso. This is not the nicest way
     to do this, but we avoid splitting all the lines again.
     """
-    return parser_cache[grammar._hashed][path].lines
+    return get_parso_cache_node(grammar, path).lines
+
+
+def get_parso_cache_node(grammar, path):
+    """
+    This is of course not public. But as long as I control parso, this
+    shouldn't be a problem. ~ Dave
+
+    The reason for this is mostly caching. This is obviously also a sign of a
+    broken caching architecture.
+    """
+    return parser_cache[grammar._hashed][path]
 
 
 def cut_value_at_position(leaf, position):
@@ -306,7 +320,7 @@ def expr_is_dotted(node):
     return node.type == 'name'
 
 
-def _function_is_x_method(method_name):
+def _function_is_x_method(decorator_checker):
     def wrapper(function_node):
         """
         This is a heuristic. It will not hold ALL the times, but it will be
@@ -316,12 +330,16 @@ def _function_is_x_method(method_name):
         """
         for decorator in function_node.get_decorators():
             dotted_name = decorator.children[1]
-            if dotted_name.get_code() == method_name:
+            if decorator_checker(dotted_name.get_code()):
                 return True
         return False
     return wrapper
 
 
-function_is_staticmethod = _function_is_x_method('staticmethod')
-function_is_classmethod = _function_is_x_method('classmethod')
-function_is_property = _function_is_x_method('property')
+function_is_staticmethod = _function_is_x_method(lambda m: m == "staticmethod")
+function_is_classmethod = _function_is_x_method(lambda m: m == "classmethod")
+function_is_property = _function_is_x_method(
+    lambda m: m == "property"
+    or m == "cached_property"
+    or (m.endswith(".setter"))
+)
