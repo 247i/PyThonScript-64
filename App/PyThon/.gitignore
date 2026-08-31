@@ -1,0 +1,4 @@
+*__pycache__*
+user_data/backend.log
+user_data/frontend.log
+user_data/frontend_faults.log
