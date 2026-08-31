@@ -1829,6 +1829,9 @@ def _prog_name(prog=None):
     if modspec is None:
         # simple script
         return _os.path.basename(arg0)
+    if modspec.name != '__main__' and arg0 != modspec.origin:
+        # named module executed as main without altering sys.argv[0]
+        return _os.path.basename(arg0)
     py = _os.path.basename(_sys.executable)
     if modspec.name != '__main__':
         # imported module or package
@@ -2678,7 +2681,7 @@ class ArgumentParser(_AttributeHolder, _ActionsContainer):
 
         if value not in choices:
             args = {'value': str(value),
-                    'choices': ', '.join(map(str, action.choices))}
+                    'choices': ', '.join(repr(str(choice)) for choice in action.choices)}
             msg = _('invalid choice: %(value)r (choose from %(choices)s)')
 
             if self.suggest_on_error and isinstance(value, str):
